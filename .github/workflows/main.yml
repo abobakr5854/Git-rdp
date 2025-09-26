@@ -41,17 +41,46 @@ jobs:
 
     - name: دانلود Bore
       run: |
-        Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/latest/download/bore-v0.5.1-x86_64-pc-windows-msvc.zip" -OutFile "bore.zip"
-        Expand-Archive bore.zip -DestinationPath .
+        # دانلود مستقیم فایل اجرایی Bore
+        Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-pc-windows-msvc.exe" -OutFile "bore.exe"
         Write-Host "Bore دانلود شد!"
+        
+        # بررسی دانلود
+        if (Test-Path "bore.exe") {
+            Write-Host "✅ فایل bore.exe آماده است"
+            $fileSize = (Get-Item "bore.exe").Length
+            Write-Host "📦 سایز فایل: $($fileSize / 1MB) MB"
+        } else {
+            Write-Host "❌ خطا در دانلود Bore"
+            exit 1
+        }
 
     - name: شروع Bore Tunnel
       run: |
         Write-Host "شروع Bore tunnel..."
-        Start-Process -FilePath ".\bore.exe" -ArgumentList "local", "3389", "--to", "bore.pub" -WindowStyle Hidden -PassThru
-        Start-Sleep -Seconds 5
         
-        Write-Host "🔗 Bore tunnel راه‌اندازی شد!"
+        # اجرای Bore و گرفتن خروجی
+        $boreJob = Start-Job -ScriptBlock {
+            & ".\bore.exe" local 3389 --to bore.pub 2>&1
+        }
+        
+        Start-Sleep -Seconds 10
+        
+        # دریافت خروجی Bore
+        $output = Receive-Job $boreJob -Keep
+        Write-Host "📡 خروجی Bore:"
+        Write-Host $output
+        
+        # استخراج پورت از خروجی
+        if ($output -match "bore\.pub:(\d+)") {
+            $port = $matches[1]
+            Write-Host "🎯 پورت اتصال: $port"
+            Write-Host "🔗 آدرس کامل: bore.pub:$port"
+        } else {
+            Write-Host "⚠️ نتوانست پورت را تشخیص دهد، خروجی کامل را بررسی کنید"
+        }
+        
+        Write-Host "✅ Bore tunnel راه‌اندازی شد!"
 
     - name: اطلاعات اتصال
       run: |
@@ -76,10 +105,22 @@ jobs:
             $i++
             Write-Host "✅ فعال - $i دقیقه گذشت"
             
-            # بررسی Bore
-            $boreProcess = Get-Process bore -ErrorAction SilentlyContinue
-            if(-not $boreProcess) {
+            # بررسی Job های Bore
+            $boreJobs = Get-Job | Where-Object {$_.State -eq "Running"}
+            if($boreJobs.Count -eq 0) {
                 Write-Host "⚠️ Bore متوقف شده، راه‌اندازی مجدد..."
-                Start-Process -FilePath ".\bore.exe" -ArgumentList "local", "3389", "--to", "bore.pub" -WindowStyle Hidden
+                $newBoreJob = Start-Job -ScriptBlock {
+                    & ".\bore.exe" local 3389 --to bore.pub 2>&1
+                }
+                Start-Sleep -Seconds 5
+                $newOutput = Receive-Job $newBoreJob -Keep
+                Write-Host "🔄 خروجی جدید Bore: $newOutput"
+            }
+            
+            # نمایش اطلاعات اتصال هر 5 دقیقه
+            if($i % 10 -eq 0) {
+                Write-Host "🔗 برای اتصال RDP به bore.pub استفاده کنید"
+                Write-Host "👤 کاربری: ${{ github.event.inputs.username }}"
+                Write-Host "🔑 رمز: ${{ github.event.inputs.password }}"
             }
         }

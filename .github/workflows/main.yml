@@ -1,4 +1,4 @@
-name: Ultra Simple RDP Server (FRP - improved logging & port extraction)
+name: Ultra Simple RDP Server (FRP - final fixed)
 
 on:
   workflow_dispatch:
@@ -21,24 +21,26 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Setup RDP (enable)
+    - name: Setup RDP (enable + user)
       shell: powershell
       run: |
+        # فعال کردن RDP و فایروال
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
         Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue
 
+        # گرفتن ورودی‌ها (GitHub Actions جایگزین می‌کند)
         $username = '${{ github.event.inputs.username }}'
         $passwordPlain = '${{ github.event.inputs.password }}'
         $securePass = ConvertTo-SecureString $passwordPlain -AsPlainText -Force
 
         try {
             New-LocalUser -Name $username -Password $securePass -PasswordNeverExpires -ErrorAction Stop
-            Write-Host "Created user $username"
+            Write-Host "Created user ${username}"
         } catch {
-            Write-Host "User may already exist, attempting to set password"
+            Write-Host "User may already exist, attempting to set password..."
             try {
                 Set-LocalUser -Name $username -Password $securePass -ErrorAction Stop
-                Write-Host "Password set for $username"
+                Write-Host "Password set for ${username}"
             } catch {
                 Write-Host "Warning: failed to create or update user: $_"
             }
@@ -48,7 +50,7 @@ jobs:
         Add-LocalGroupMember -Group 'Administrators' -Member $username -ErrorAction SilentlyContinue
         Write-Host 'RDP enabled and user configured.'
 
-    - name: Download FRP (release v0.52.3)
+    - name: Download FRP (v0.52.3)
       shell: powershell
       run: |
         $url = 'https://github.com/fatedier/frp/releases/download/v0.52.3/frp_0.52.3_windows_amd64.zip'
@@ -75,26 +77,25 @@ jobs:
         $cfg | Out-File -FilePath 'frpc.ini' -Encoding ASCII -Force
         Write-Host 'frpc.ini written.'
 
-    - name: Start frpc (detached) and try to extract assigned port
+    - name: Start frpc (detached) and extract assigned port
       shell: powershell
       run: |
-        # حذف لاگ قبلی
+        # پاک کردن لاگ قدیمی
         if (Test-Path 'frp.log') { Remove-Item 'frp.log' -Force }
 
         Write-Host "Starting frpc (detached) and redirecting output to frp.log..."
-        # از cmd.exe start /b استفاده می‌کنیم تا فرایند جدا شده و runner ادامه پیدا کنه
+        # از cmd.exe start /b استفاده می‌کنیم تا فرایند در پس‌زمینه ادامه یابد
         $startCmd = 'start /b "" .\frpc.exe -c frpc.ini > frp.log 2>&1'
         Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', $startCmd -WindowStyle Hidden
 
-        # حالا صبر کن و لاگ را بررسی کن تا پورت رو پیدا کنیم
-        $maxWaitSeconds = 30
+        # منتظر شدن و بررسی لاگ برای استخراج پورت
+        $maxWaitSeconds = 60
         $foundPort = $null
         for ($i = 0; $i -lt $maxWaitSeconds; $i++) {
             Start-Sleep -Seconds 1
             if (Test-Path -Path 'frp.log') {
                 $lines = Get-Content -Path 'frp.log' -ErrorAction SilentlyContinue
                 foreach ($l in $lines) {
-                    # چند الگو برای پیدا کردن پورت تلاش می‌کنیم
                     if ($l -match 'remote_port\s*[:=]?\s*(\d{2,5})') { $foundPort = $matches[1]; break }
                     if ($l -match 'listening.*:(\d{2,5})') { $foundPort = $matches[1]; break }
                     if ($l -match 'address.*:(\d{2,5})') { $foundPort = $matches[1]; break }
@@ -105,18 +106,16 @@ jobs:
         }
 
         if ($foundPort) {
-            Write-Host "=== FRP assigned remote port: $foundPort ==="
-            echo "FRP_REMOTE_PORT=$foundPort" | Out-File -FilePath $env:GITHUB_ENV -Encoding ASCII -Append
+            Write-Host "=== FRP assigned remote port: ${foundPort} ==="
+            echo "FRP_REMOTE_PORT=${foundPort}" | Out-File -FilePath $env:GITHUB_ENV -Encoding ASCII -Append
         } else {
-            Write-Host "Could not determine assigned remote port within $maxWaitSeconds seconds."
-            Write-Host "---- Last 120 lines of frp.log for debug ----"
+            Write-Host "Could not determine assigned remote port within ${maxWaitSeconds} seconds."
+            Write-Host "---- Last 200 lines of frp.log for debug ----"
             if (Test-Path -Path 'frp.log') {
-                Get-Content -Path 'frp.log' -Tail 120 | ForEach-Object { Write-Host $_ }
+                Get-Content -Path 'frp.log' -Tail 200 | ForEach-Object { Write-Host $_ }
             } else {
                 Write-Host "(frp.log not found)"
             }
-            # آپلود لاگ برای دانلود و بررسی محلی
-            Write-Host "Will upload frp.log as artifact for debugging."
         }
 
     - name: Upload frp.log (for debugging)
@@ -126,21 +125,28 @@ jobs:
         name: frp-log
         path: frp.log
 
-    - name: Connection Info (with extracted port if any)
+    - name: Final Connection Info (single-line IP:PORT, user, pass)
       shell: powershell
       run: |
         $srv = 'frp.freefrp.net'
         $usr = '${{ github.event.inputs.username }}'
         $pwd = '${{ github.event.inputs.password }}'
         $port = $env:FRP_REMOTE_PORT
+
         Write-Host '===================='
-        Write-Host 'RDP CONNECTION INFO'
+        Write-Host 'RDP CONNECTION INFO (FINAL)'
         Write-Host '===================='
         if ($port) {
-            Write-Host "Server: $srv:$port"
+            # از ${} برای جلوگیری از مشکل parse استفاده می‌کنیم
+            Write-Host "Server: ${srv}:${port}"
+            Write-Host "Username: ${usr}"
+            Write-Host "Password: ${pwd}"
+            # چاپ یک خط واحد خلاصه برای اینکه راحت copy-paste کنی
+            Write-Host "CONNECT => ${srv}:${port}  |  ${usr}  |  ${pwd}"
         } else {
-            Write-Host "Server: $srv (port not detected — download frp.log artifact and inspect)"
+            Write-Host "Server: ${srv} (port not detected — download frp.log artifact and inspect)"
+            Write-Host "Username: ${usr}"
+            Write-Host "Password: ${pwd}"
+            Write-Host "CONNECT => ${srv}:<PORT_NOT_FOUND>  |  ${usr}  |  ${pwd}"
         }
-        Write-Host "Username: $usr"
-        Write-Host "Password: $pwd"
         Write-Host '===================='

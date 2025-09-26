@@ -91,6 +91,7 @@ jobs:
       shell: powershell
       run: |
         $i = 0
+        $usr = "${{ github.event.inputs.username }}"
         while ($true) {
             Start-Sleep -Seconds 60
             $i++
@@ -106,6 +107,6 @@ jobs:
             }
             if ($i % 10 -eq 0) {
                 Write-Host "Server: frp.freefrp.net"
-                Write-Host "User: ${{ github.event.inputs.username }}"
+                Write-Host "User: $usr"
             }
         }

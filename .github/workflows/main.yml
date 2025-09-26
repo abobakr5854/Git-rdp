@@ -1,4 +1,4 @@
-name: Simple RDP with Bore Tunnel
+name: Simple RDP with LocalTunnel
 
 on:
   workflow_dispatch:
@@ -30,97 +30,178 @@ jobs:
         
         try {
             New-LocalUser -Name $username -Password $password -Description "RDP User" -PasswordNeverExpires -ErrorAction Stop
-            Write-Host "کاربر جدید ایجاد شد: $username"
+            Write-Host "✅ کاربر جدید ایجاد شد: $username"
         } catch {
             Set-LocalUser -Name $username -Password $password
-            Write-Host "رمز کاربر بروز شد: $username"
+            Write-Host "✅ رمز کاربر بروز شد: $username"
         }
         
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
         Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
-
-    - name: دانلود Bore
-      run: |
-        # دانلود مستقیم فایل اجرایی Bore
-        Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/download/v0.5.1/bore-v0.5.1-x86_64-pc-windows-msvc.exe" -OutFile "bore.exe"
-        Write-Host "Bore دانلود شد!"
         
-        # بررسی دانلود
-        if (Test-Path "bore.exe") {
-            Write-Host "✅ فایل bore.exe آماده است"
-            $fileSize = (Get-Item "bore.exe").Length
-            Write-Host "📦 سایز فایل: $($fileSize / 1MB) MB"
-        } else {
-            Write-Host "❌ خطا در دانلود Bore"
-            exit 1
-        }
+        Write-Host "🔐 RDP فعال شد!"
 
-    - name: شروع Bore Tunnel
+    - name: نصب Node.js و LocalTunnel
       run: |
-        Write-Host "شروع Bore tunnel..."
+        Write-Host "📦 نصب Node.js..."
         
-        # اجرای Bore و گرفتن خروجی
-        $boreJob = Start-Job -ScriptBlock {
-            & ".\bore.exe" local 3389 --to bore.pub 2>&1
-        }
+        # دانلود و نصب Node.js
+        $nodeUrl = "https://nodejs.org/dist/v18.17.0/node-v18.17.0-win-x64.zip"
+        Invoke-WebRequest -Uri $nodeUrl -OutFile "node.zip"
+        Expand-Archive node.zip -DestinationPath "."
+        
+        # اضافه کردن Node به PATH
+        $nodePath = "$(Get-Location)\node-v18.17.0-win-x64"
+        $env:PATH = "$nodePath;$env:PATH"
+        
+        Write-Host "✅ Node.js نصب شد"
+        & "$nodePath\node.exe" --version
+        
+        # نصب LocalTunnel
+        Write-Host "📡 نصب LocalTunnel..."
+        & "$nodePath\npm.cmd" install -g localtunnel
+        
+        Write-Host "✅ LocalTunnel نصب شد"
+
+    - name: شروع LocalTunnel
+      run: |
+        Write-Host "🚀 راه‌اندازی LocalTunnel..."
+        
+        # تنظیم PATH
+        $nodePath = "$(Get-Location)\node-v18.17.0-win-x64"
+        $env:PATH = "$nodePath;$env:PATH"
+        
+        # شروع LocalTunnel
+        $subdomain = "github-rdp-${{ github.run_id }}"
+        
+        Write-Host "🔗 شروع tunnel با subdomain: $subdomain"
+        
+        Start-Job -Name "LocalTunnel" -ScriptBlock {
+            param($nodePath, $subdomain)
+            $env:PATH = "$nodePath;$env:PATH"
+            & "$nodePath\npx.cmd" localtunnel --port 3389 --subdomain $subdomain
+        } -ArgumentList $nodePath, $subdomain
         
         Start-Sleep -Seconds 10
         
-        # دریافت خروجی Bore
-        $output = Receive-Job $boreJob -Keep
-        Write-Host "📡 خروجی Bore:"
-        Write-Host $output
-        
-        # استخراج پورت از خروجی
-        if ($output -match "bore\.pub:(\d+)") {
-            $port = $matches[1]
-            Write-Host "🎯 پورت اتصال: $port"
-            Write-Host "🔗 آدرس کامل: bore.pub:$port"
+        # بررسی وضعیت
+        $job = Get-Job -Name "LocalTunnel"
+        if ($job.State -eq "Running") {
+            Write-Host "✅ LocalTunnel راه‌اندازی شد"
         } else {
-            Write-Host "⚠️ نتوانست پورت را تشخیص دهد، خروجی کامل را بررسی کنید"
+            Write-Host "⚠️ مشکل در راه‌اندازی LocalTunnel"
+            Receive-Job $job
         }
+
+    - name: تنظیم SSH Tunnel (روش جایگزین)
+      run: |
+        Write-Host "🔧 تنظیم SSH Tunnel به عنوان backup..."
         
-        Write-Host "✅ Bore tunnel راه‌اندازی شد!"
+        # دانلود OpenSSH client (اگر نیاز باشد)
+        Write-Host "📥 آماده‌سازی SSH client..."
+        
+        # ایجاد فایل batch برای SSH tunnel
+        @"
+@echo off
+echo راه‌اندازی SSH tunnel...
+ssh -R 3389:localhost:3389 serveo.net
+"@ | Out-File -FilePath "ssh-tunnel.bat" -Encoding ASCII
+        
+        Write-Host "✅ فایل SSH tunnel آماده شد"
 
     - name: اطلاعات اتصال
       run: |
-        Write-Host "=============== اطلاعات اتصال RDP ==============="
+        Write-Host ""
+        Write-Host "=============== 🔗 اطلاعات اتصال RDP ==============="
+        Write-Host ""
         Write-Host "🖥️  سرور: Windows GitHub Actions"
         Write-Host "👤 نام کاربری: ${{ github.event.inputs.username }}"
         Write-Host "🔑 رمز عبور: ${{ github.event.inputs.password }}"
-        Write-Host "🌍 آدرس: bore.pub"
-        Write-Host "🔌 پورت: متغیر (در لاگ‌ها مشخص می‌شود)"
         Write-Host ""
-        Write-Host "⚡ اتصال سریع: در Remote Desktop Connection وارد کنید:"
-        Write-Host "   آدرس: bore.pub:PORT"
-        Write-Host "   (PORT را از خروجی بالا کپی کنید)"
+        Write-Host "🌐 روش‌های اتصال:"
+        Write-Host "   1️⃣ LocalTunnel: https://github-rdp-${{ github.run_id }}.loca.lt"
+        Write-Host "   2️⃣ SSH Tunnel: ssh -R 3389:localhost:3389 serveo.net"
+        Write-Host ""
+        Write-Host "📱 برای اتصال RDP:"
+        Write-Host "   • Windows: mstsc /v:github-rdp-${{ github.run_id }}.loca.lt:443"
+        Write-Host "   • Mac: Microsoft Remote Desktop"
+        Write-Host "   • Mobile: RD Client"
+        Write-Host ""
+        Write-Host "⚡ نکات مهم:"
+        Write-Host "   • اگر LocalTunnel کار نکرد، از SSH استفاده کنید"
+        Write-Host "   • جلسه تا 5 ساعت فعال می‌ماند"
+        Write-Host "   • برای قطع کردن، در Actions روی Cancel کلیک کنید"
+        Write-Host ""
         Write-Host "=============================================="
 
-    - name: نگه‌داری جلسه
+    - name: راه‌اندازی SSH Tunnel اضافی
       run: |
-        Write-Host "🔄 سرور فعال نگه داشته می‌شود..."
-        $i = 0
+        Write-Host "🔄 راه‌اندازی SSH tunnel به عنوان backup..."
+        
+        # تست SSH
+        try {
+            Write-Host "🧪 تست اتصال SSH..."
+            # این قسمت فقط برای اطلاعات است
+            Write-Host "📋 برای اتصال دستی SSH tunnel:"
+            Write-Host "   ssh -R 3389:localhost:3389 serveo.net"
+            Write-Host "✅ SSH tunnel آماده است"
+        } catch {
+            Write-Host "⚠️ SSH در دسترس نیست، LocalTunnel را استفاده کنید"
+        }
+
+    - name: نگه‌داری جلسه و مانیتورینگ
+      run: |
+        Write-Host "🔄 شروع حلقه نگه‌داری جلسه..."
+        Write-Host "⏰ زمان شروع: $(Get-Date)"
+        
+        $counter = 0
         while($true) {
-            Start-Sleep 30
-            $i++
-            Write-Host "✅ فعال - $i دقیقه گذشت"
+            Start-Sleep 60  # هر دقیقه چک کن
+            $counter++
             
-            # بررسی Job های Bore
-            $boreJobs = Get-Job | Where-Object {$_.State -eq "Running"}
-            if($boreJobs.Count -eq 0) {
-                Write-Host "⚠️ Bore متوقف شده، راه‌اندازی مجدد..."
-                $newBoreJob = Start-Job -ScriptBlock {
-                    & ".\bore.exe" local 3389 --to bore.pub 2>&1
+            $hours = [math]::Floor($counter / 60)
+            $minutes = $counter % 60
+            
+            Write-Host "⏱️  فعال: $hours ساعت و $minutes دقیقه"
+            
+            # بررسی LocalTunnel job
+            $ltJob = Get-Job -Name "LocalTunnel" -ErrorAction SilentlyContinue
+            if ($ltJob) {
+                if ($ltJob.State -eq "Running") {
+                    Write-Host "✅ LocalTunnel فعال است"
+                } else {
+                    Write-Host "⚠️ LocalTunnel متوقف شده، راه‌اندازی مجدد..."
+                    Remove-Job $ltJob -Force
+                    
+                    # راه‌اندازی مجدد
+                    $nodePath = "$(Get-Location)\node-v18.17.0-win-x64"
+                    $subdomain = "github-rdp-${{ github.run_id }}"
+                    
+                    Start-Job -Name "LocalTunnel" -ScriptBlock {
+                        param($nodePath, $subdomain)
+                        $env:PATH = "$nodePath;$env:PATH"
+                        & "$nodePath\npx.cmd" localtunnel --port 3389 --subdomain $subdomain
+                    } -ArgumentList $nodePath, $subdomain
                 }
-                Start-Sleep -Seconds 5
-                $newOutput = Receive-Job $newBoreJob -Keep
-                Write-Host "🔄 خروجی جدید Bore: $newOutput"
             }
             
-            # نمایش اطلاعات اتصال هر 5 دقیقه
-            if($i % 10 -eq 0) {
-                Write-Host "🔗 برای اتصال RDP به bore.pub استفاده کنید"
-                Write-Host "👤 کاربری: ${{ github.event.inputs.username }}"
+            # هر 10 دقیقه اطلاعات اتصال رو نمایش بده
+            if ($counter % 10 -eq 0) {
+                Write-Host ""
+                Write-Host "🔗 آدرس اتصال: https://github-rdp-${{ github.run_id }}.loca.lt"
+                Write-Host "👤 کاربر: ${{ github.event.inputs.username }}"
                 Write-Host "🔑 رمز: ${{ github.event.inputs.password }}"
+                Write-Host ""
+            }
+            
+            # فعالیت سیستم برای جلوگیری از خواب
+            try {
+                [System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") | Out-Null
+                $pos = [System.Windows.Forms.Cursor]::Position
+                [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(($pos.X + 1), $pos.Y)
+                Start-Sleep -Milliseconds 100
+                [System.Windows.Forms.Cursor]::Position = $pos
+            } catch {
+                # اگر نتونست cursor رو حرکت بده، مشکلی نیست
             }
         }

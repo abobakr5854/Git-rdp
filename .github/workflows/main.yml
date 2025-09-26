@@ -101,11 +101,12 @@ jobs:
         Write-Host "📥 آماده‌سازی SSH client..."
         
         # ایجاد فایل batch برای SSH tunnel
-        @"
+        $batchContent = @"
 @echo off
 echo راه‌اندازی SSH tunnel...
 ssh -R 3389:localhost:3389 serveo.net
-"@ | Out-File -FilePath "ssh-tunnel.bat" -Encoding ASCII
+"@
+        $batchContent | Out-File -FilePath "ssh-tunnel.bat" -Encoding ASCII
         
         Write-Host "✅ فایل SSH tunnel آماده شد"
 

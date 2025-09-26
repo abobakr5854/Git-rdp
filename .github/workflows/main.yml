@@ -1,4 +1,4 @@
-name: Ultra Simple RDP Server
+name: Ultra Simple RDP Server (FRP, no ngrok)
 
 on:
   workflow_dispatch:
@@ -21,7 +21,8 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
 
-    - name: Setup RDP
+    - name: Setup RDP (enable)
+      shell: powershell
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
         Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue
@@ -32,26 +33,35 @@ jobs:
 
         try {
             New-LocalUser -Name $username -Password $securePass -PasswordNeverExpires -ErrorAction Stop
+            Write-Host "Created user $username"
         } catch {
-            # اگر یوزر قبلاً وجود داشته باشه، پسورد رو ست کن
-            Set-LocalUser -Name $username -Password $securePass -ErrorAction SilentlyContinue
+            Write-Host "User may already exist, attempting to set password"
+            try {
+                Set-LocalUser -Name $username -Password $securePass -ErrorAction Stop
+                Write-Host "Password set for $username"
+            } catch {
+                Write-Host "Warning: failed to create or update user: $_"
+            }
         }
 
         Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $username -ErrorAction SilentlyContinue
         Add-LocalGroupMember -Group 'Administrators' -Member $username -ErrorAction SilentlyContinue
-        Write-Host 'RDP Ready!'
+        Write-Host 'RDP enabled and user configured.'
 
-    - name: Download FRP
+    - name: Download FRP (release v0.52.3)
+      shell: powershell
       run: |
         $url = 'https://github.com/fatedier/frp/releases/download/v0.52.3/frp_0.52.3_windows_amd64.zip'
-        Invoke-WebRequest $url -OutFile frp.zip
-        Expand-Archive frp.zip -DestinationPath .
-        Copy-Item 'frp_0.52.3_windows_amd64\frpc.exe' -Destination 'frpc.exe'
-        Write-Host 'FRP Downloaded'
+        $out = 'frp.zip'
+        Invoke-WebRequest $url -OutFile $out -UseBasicParsing
+        Expand-Archive $out -DestinationPath . -Force
+        Copy-Item 'frp_0.52.3_windows_amd64\frpc.exe' -Destination 'frpc.exe' -Force
+        Write-Host 'FRP downloaded.'
 
-    - name: Create FRP Config
+    - name: Create frpc.ini
+      shell: powershell
       run: |
-        $config = @'
+        $cfg = @'
         [common]
         server_addr = frp.freefrp.net
         server_port = 7000
@@ -62,51 +72,45 @@ jobs:
         local_port = 3389
         remote_port = 0
         '@
-        $config | Out-File -FilePath 'frpc.ini' -Encoding ASCII
-        Write-Host 'Config Created'
+        $cfg | Out-File -FilePath 'frpc.ini' -Encoding ASCII -Force
+        Write-Host 'frpc.ini written.'
 
-    - name: Start FRP
+    - name: Start FRP (background) and wait
+      shell: powershell
       run: |
-        Start-Process -FilePath '.\frpc.exe' -ArgumentList '-c','frpc.ini' -WindowStyle Hidden -PassThru | Out-Null
-        Start-Sleep -Seconds 3
-        $proc = Get-Process -Name frpc -ErrorAction SilentlyContinue
-        if ($null -ne $proc) {
-            Write-Host "FRP started (PID $($proc.Id))"
+        # اجرا و گرفتن پردازش
+        $proc = Start-Process -FilePath '.\frpc.exe' -ArgumentList '-c','frpc.ini' -WindowStyle Hidden -PassThru
+        Start-Sleep -Seconds 2
+        if ($proc -and $proc.Id) {
+            Write-Host "frpc started (PID $($proc.Id)). Will wait until job timeout or process exit."
+            # منتظر بمون تا فرایند تمام شود یا تا حداکثر زمان job (360 دقیقه) که به ثانیه تبدیل شده
+            $maxSeconds = 360 * 60
+            try {
+                Wait-Process -Id $proc.Id -Timeout $maxSeconds -ErrorAction SilentlyContinue
+                if (-not (Get-Process -Id $proc.Id -ErrorAction SilentlyContinue)) {
+                    Write-Host "frpc exited before timeout."
+                } else {
+                    Write-Host "Timeout reached; frpc still running (job will finish now)."
+                }
+            } catch {
+                Write-Host "Wait-Process error: $_"
+            }
         } else {
-            Write-Host "Failed to start FRP. Check previous logs."
+            Write-Host "Failed to start frpc.exe. Check logs above."
+            exit 1
         }
 
-    - name: Connection Info
+    - name: Connection Info (printed at start)
+      shell: powershell
       run: |
+        $srv = 'frp.freefrp.net'
+        $usr = '${{ github.event.inputs.username }}'
+        $pwd = '${{ github.event.inputs.password }}'
         Write-Host '===================='
         Write-Host 'RDP CONNECTION INFO'
         Write-Host '===================='
-        Write-Host "Server: frp.freefrp.net"
-        Write-Host "Username: ${{ github.event.inputs.username }}"
-        Write-Host "Password: ${{ github.event.inputs.password }}"
-        Write-Host 'Check FRP logs above for remote port.'
+        Write-Host "Server: $srv"
+        Write-Host "Username: $usr"
+        Write-Host "Password: $pwd"
+        Write-Host 'Note: check frpc output lines in the logs above for remote_port (it shows assigned port).'
         Write-Host '===================='
-
-    - name: Keep Alive
-      shell: powershell
-      run: |
-        $i = 0
-        $usr = "${{ github.event.inputs.username }}"
-        while ($true) {
-            Start-Sleep -Seconds 60
-            $i++
-            Write-Host "Active: $i minutes"
-            $proc = Get-Process -Name frpc -ErrorAction SilentlyContinue
-            if (-not $proc) {
-                Write-Host "FRP not running — restarting..."
-                try {
-                    Start-Process -FilePath '.\frpc.exe' -ArgumentList '-c','frpc.ini' -WindowStyle Hidden -PassThru | Out-Null
-                } catch {
-                    Write-Host "Failed to restart FRP: $_"
-                }
-            }
-            if ($i % 10 -eq 0) {
-                Write-Host "Server: frp.freefrp.net"
-                Write-Host "User: $usr"
-            }
-        }

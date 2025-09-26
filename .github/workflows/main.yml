@@ -18,81 +18,93 @@ jobs:
     timeout-minutes: 360
 
     steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
     - name: Setup RDP
       run: |
-        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
-        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        $username = "${{ github.event.inputs.username }}"
-        $password = "${{ github.event.inputs.password }}" | ConvertTo-SecureString -AsPlainText -Force
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0
+        Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue
+
+        $username = '${{ github.event.inputs.username }}'
+        $passwordPlain = '${{ github.event.inputs.password }}'
+        $securePass = ConvertTo-SecureString $passwordPlain -AsPlainText -Force
+
         try {
-            New-LocalUser -Name $username -Password $password -PasswordNeverExpires -ErrorAction Stop
+            New-LocalUser -Name $username -Password $securePass -PasswordNeverExpires -ErrorAction Stop
         } catch {
-            Set-LocalUser -Name $username -Password $password
+            # اگر یوزر قبلاً وجود داشته باشه، پسورد رو ست کن
+            Set-LocalUser -Name $username -Password $securePass -ErrorAction SilentlyContinue
         }
-        Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
-        Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
-        Write-Host "RDP Ready!"
+
+        Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $username -ErrorAction SilentlyContinue
+        Add-LocalGroupMember -Group 'Administrators' -Member $username -ErrorAction SilentlyContinue
+        Write-Host 'RDP Ready!'
 
     - name: Download FRP
       run: |
-        $url = "https://github.com/fatedier/frp/releases/download/v0.52.3/frp_0.52.3_windows_amd64.zip"
+        $url = 'https://github.com/fatedier/frp/releases/download/v0.52.3/frp_0.52.3_windows_amd64.zip'
         Invoke-WebRequest $url -OutFile frp.zip
         Expand-Archive frp.zip -DestinationPath .
-        Copy-Item "frp_0.52.3_windows_amd64\frpc.exe" -Destination "frpc.exe"
-        Write-Host "FRP Downloaded"
+        Copy-Item 'frp_0.52.3_windows_amd64\frpc.exe' -Destination 'frpc.exe'
+        Write-Host 'FRP Downloaded'
 
     - name: Create FRP Config
       run: |
-        $config = @"
-[common]
-server_addr = frp.freefrp.net
-server_port = 7000
+        $config = @'
+        [common]
+        server_addr = frp.freefrp.net
+        server_port = 7000
 
-[rdp]
-type = tcp
-local_ip = 127.0.0.1
-local_port = 3389
-remote_port = 0
-"@
-        $config | Out-File -FilePath "frpc.ini" -Encoding ASCII
-        Write-Host "Config Created"
+        [rdp]
+        type = tcp
+        local_ip = 127.0.0.1
+        local_port = 3389
+        remote_port = 0
+        '@
+        $config | Out-File -FilePath 'frpc.ini' -Encoding ASCII
+        Write-Host 'Config Created'
 
     - name: Start FRP
       run: |
-        Start-Job -Name "FRP" -ScriptBlock { 
-            & ".\frpc.exe" -c "frpc.ini"
+        Start-Process -FilePath '.\frpc.exe' -ArgumentList '-c','frpc.ini' -WindowStyle Hidden -PassThru | Out-Null
+        Start-Sleep -Seconds 3
+        $proc = Get-Process -Name frpc -ErrorAction SilentlyContinue
+        if ($null -ne $proc) {
+            Write-Host "FRP started (PID $($proc.Id))"
+        } else {
+            Write-Host "Failed to start FRP. Check previous logs."
         }
-        Start-Sleep 10
-        $output = Receive-Job -Name "FRP" -Keep
-        Write-Host "FRP Output: $output"
 
     - name: Connection Info
       run: |
-        Write-Host "===================="
-        Write-Host "RDP CONNECTION INFO"
-        Write-Host "===================="
+        Write-Host '===================='
+        Write-Host 'RDP CONNECTION INFO'
+        Write-Host '===================='
         Write-Host "Server: frp.freefrp.net"
         Write-Host "Username: ${{ github.event.inputs.username }}"
         Write-Host "Password: ${{ github.event.inputs.password }}"
-        Write-Host "Check FRP output above for port number"
-        Write-Host "===================="
+        Write-Host 'Check FRP logs above for remote port.'
+        Write-Host '===================='
 
     - name: Keep Alive
+      shell: powershell
       run: |
         $i = 0
-        while($true) {
-            Start-Sleep 60
+        while ($true) {
+            Start-Sleep -Seconds 60
             $i++
             Write-Host "Active: $i minutes"
-            $job = Get-Job -Name "FRP" -ErrorAction SilentlyContinue
-            if(-not $job -or $job.State -ne "Running") {
-                Write-Host "Restarting FRP..."
-                Remove-Job -Name "FRP" -Force -ErrorAction SilentlyContinue
-                Start-Job -Name "FRP" -ScriptBlock { 
-                    & ".\frpc.exe" -c "frpc.ini"
+            $proc = Get-Process -Name frpc -ErrorAction SilentlyContinue
+            if (-not $proc) {
+                Write-Host "FRP not running — restarting..."
+                try {
+                    Start-Process -FilePath '.\frpc.exe' -ArgumentList '-c','frpc.ini' -WindowStyle Hidden -PassThru | Out-Null
+                } catch {
+                    Write-Host "Failed to restart FRP: $_"
                 }
             }
-            if($i % 10 -eq 0) {
+            if ($i % 10 -eq 0) {
                 Write-Host "Server: frp.freefrp.net"
                 Write-Host "User: ${{ github.event.inputs.username }}"
             }

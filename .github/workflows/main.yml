@@ -1,115 +1,99 @@
-name: Simple RDP with LocalTunnel
+name: Ultra Simple RDP Server
 
 on:
   workflow_dispatch:
     inputs:
       username:
-        description: 'نام کاربری'
+        description: 'Username'
         required: true
         default: 'user'
       password:
-        description: 'رمز عبور'
+        description: 'Password'
         required: true
         default: 'Pass123!'
 
 jobs:
-  windows-rdp:
+  rdp:
     runs-on: windows-latest
-    timeout-minutes: 300
+    timeout-minutes: 360
 
     steps:
-    - name: تنظیم RDP
+    - name: Setup RDP
       run: |
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        
         $username = "${{ github.event.inputs.username }}"
         $password = "${{ github.event.inputs.password }}" | ConvertTo-SecureString -AsPlainText -Force
-        
         try {
-            New-LocalUser -Name $username -Password $password -Description "RDP User" -PasswordNeverExpires -ErrorAction Stop
-            Write-Host "کاربر جدید ایجاد شد: $username"
+            New-LocalUser -Name $username -Password $password -PasswordNeverExpires -ErrorAction Stop
         } catch {
             Set-LocalUser -Name $username -Password $password
-            Write-Host "رمز کاربر بروز شد: $username"
         }
-        
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
         Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
-        
-        Write-Host "RDP فعال شد!"
+        Write-Host "RDP Ready!"
 
-    - name: نصب Node.js
+    - name: Download FRP
       run: |
-        Write-Host "نصب Node.js..."
-        choco install nodejs -y
-        Write-Host "Node.js نصب شد"
-        node --version
-        npm --version
+        $url = "https://github.com/fatedier/frp/releases/download/v0.52.3/frp_0.52.3_windows_amd64.zip"
+        Invoke-WebRequest $url -OutFile frp.zip
+        Expand-Archive frp.zip -DestinationPath .
+        Copy-Item "frp_0.52.3_windows_amd64\frpc.exe" -Destination "frpc.exe"
+        Write-Host "FRP Downloaded"
 
-    - name: نصب LocalTunnel
+    - name: Create FRP Config
       run: |
-        Write-Host "نصب LocalTunnel..."
-        npm install -g localtunnel
-        Write-Host "LocalTunnel نصب شد"
+        $config = @"
+[common]
+server_addr = frp.freefrp.net
+server_port = 7000
 
-    - name: شروع LocalTunnel
+[rdp]
+type = tcp
+local_ip = 127.0.0.1
+local_port = 3389
+remote_port = 0
+"@
+        $config | Out-File -FilePath "frpc.ini" -Encoding ASCII
+        Write-Host "Config Created"
+
+    - name: Start FRP
       run: |
-        Write-Host "راه اندازی LocalTunnel..."
-        $subdomain = "github-rdp-${{ github.run_id }}"
-        
-        Start-Job -Name "LocalTunnel" -ScriptBlock {
-            param($subdomain)
-            npx localtunnel --port 3389 --subdomain $subdomain
-        } -ArgumentList $subdomain
-        
-        Start-Sleep -Seconds 15
-        
-        $job = Get-Job -Name "LocalTunnel"
-        if ($job.State -eq "Running") {
-            Write-Host "LocalTunnel راه اندازی شد"
-            Write-Host "آدرس: https://$subdomain.loca.lt"
-        } else {
-            Write-Host "مشکل در راه اندازی LocalTunnel"
-            Receive-Job $job
+        Start-Job -Name "FRP" -ScriptBlock { 
+            & ".\frpc.exe" -c "frpc.ini"
         }
+        Start-Sleep 10
+        $output = Receive-Job -Name "FRP" -Keep
+        Write-Host "FRP Output: $output"
 
-    - name: اطلاعات اتصال
+    - name: Connection Info
       run: |
-        Write-Host "=============== اطلاعات اتصال RDP ==============="
-        Write-Host "سرور: Windows GitHub Actions"
-        Write-Host "نام کاربری: ${{ github.event.inputs.username }}"
-        Write-Host "رمز عبور: ${{ github.event.inputs.password }}"
-        Write-Host "آدرس: https://github-rdp-${{ github.run_id }}.loca.lt"
-        Write-Host "پورت: 443 (HTTPS tunnel)"
-        Write-Host ""
-        Write-Host "برای اتصال RDP:"
-        Write-Host "آدرس: github-rdp-${{ github.run_id }}.loca.lt:443"
-        Write-Host "=============================================="
+        Write-Host "===================="
+        Write-Host "RDP CONNECTION INFO"
+        Write-Host "===================="
+        Write-Host "Server: frp.freefrp.net"
+        Write-Host "Username: ${{ github.event.inputs.username }}"
+        Write-Host "Password: ${{ github.event.inputs.password }}"
+        Write-Host "Check FRP output above for port number"
+        Write-Host "===================="
 
-    - name: نگه داری جلسه
+    - name: Keep Alive
       run: |
-        Write-Host "سرور فعال نگه داشته می شود..."
-        $counter = 0
+        $i = 0
         while($true) {
             Start-Sleep 60
-            $counter++
-            Write-Host "فعال: $counter دقیقه"
-            
-            $ltJob = Get-Job -Name "LocalTunnel" -ErrorAction SilentlyContinue
-            if ($ltJob -and $ltJob.State -ne "Running") {
-                Write-Host "راه اندازی مجدد LocalTunnel..."
-                Remove-Job $ltJob -Force
-                
-                $subdomain = "github-rdp-${{ github.run_id }}"
-                Start-Job -Name "LocalTunnel" -ScriptBlock {
-                    param($subdomain)
-                    npx localtunnel --port 3389 --subdomain $subdomain
-                } -ArgumentList $subdomain
+            $i++
+            Write-Host "Active: $i minutes"
+            $job = Get-Job -Name "FRP" -ErrorAction SilentlyContinue
+            if(-not $job -or $job.State -ne "Running") {
+                Write-Host "Restarting FRP..."
+                Remove-Job -Name "FRP" -Force -ErrorAction SilentlyContinue
+                Start-Job -Name "FRP" -ScriptBlock { 
+                    & ".\frpc.exe" -c "frpc.ini"
+                }
             }
-            
-            if ($counter % 5 -eq 0) {
-                Write-Host "آدرس اتصال: https://github-rdp-${{ github.run_id }}.loca.lt"
-                Write-Host "کاربر: ${{ github.event.inputs.username }}"
+            if($i % 10 -eq 0) {
+                Write-Host "Server: frp.freefrp.net"
+                Write-Host "User: ${{ github.event.inputs.username }}"
             }
         }

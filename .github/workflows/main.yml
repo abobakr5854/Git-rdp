@@ -20,189 +20,96 @@ jobs:
     steps:
     - name: تنظیم RDP
       run: |
-        # فعال کردن RDP
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
         
-        # ایجاد کاربر
         $username = "${{ github.event.inputs.username }}"
         $password = "${{ github.event.inputs.password }}" | ConvertTo-SecureString -AsPlainText -Force
         
         try {
             New-LocalUser -Name $username -Password $password -Description "RDP User" -PasswordNeverExpires -ErrorAction Stop
-            Write-Host "✅ کاربر جدید ایجاد شد: $username"
+            Write-Host "کاربر جدید ایجاد شد: $username"
         } catch {
             Set-LocalUser -Name $username -Password $password
-            Write-Host "✅ رمز کاربر بروز شد: $username"
+            Write-Host "رمز کاربر بروز شد: $username"
         }
         
         Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
         Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
         
-        Write-Host "🔐 RDP فعال شد!"
+        Write-Host "RDP فعال شد!"
 
-    - name: نصب Node.js و LocalTunnel
+    - name: نصب Node.js
       run: |
-        Write-Host "📦 نصب Node.js..."
-        
-        # دانلود و نصب Node.js
-        $nodeUrl = "https://nodejs.org/dist/v18.17.0/node-v18.17.0-win-x64.zip"
-        Invoke-WebRequest -Uri $nodeUrl -OutFile "node.zip"
-        Expand-Archive node.zip -DestinationPath "."
-        
-        # اضافه کردن Node به PATH
-        $nodePath = "$(Get-Location)\node-v18.17.0-win-x64"
-        $env:PATH = "$nodePath;$env:PATH"
-        
-        Write-Host "✅ Node.js نصب شد"
-        & "$nodePath\node.exe" --version
-        
-        # نصب LocalTunnel
-        Write-Host "📡 نصب LocalTunnel..."
-        & "$nodePath\npm.cmd" install -g localtunnel
-        
-        Write-Host "✅ LocalTunnel نصب شد"
+        Write-Host "نصب Node.js..."
+        choco install nodejs -y
+        Write-Host "Node.js نصب شد"
+        node --version
+        npm --version
+
+    - name: نصب LocalTunnel
+      run: |
+        Write-Host "نصب LocalTunnel..."
+        npm install -g localtunnel
+        Write-Host "LocalTunnel نصب شد"
 
     - name: شروع LocalTunnel
       run: |
-        Write-Host "🚀 راه‌اندازی LocalTunnel..."
-        
-        # تنظیم PATH
-        $nodePath = "$(Get-Location)\node-v18.17.0-win-x64"
-        $env:PATH = "$nodePath;$env:PATH"
-        
-        # شروع LocalTunnel
+        Write-Host "راه اندازی LocalTunnel..."
         $subdomain = "github-rdp-${{ github.run_id }}"
         
-        Write-Host "🔗 شروع tunnel با subdomain: $subdomain"
-        
         Start-Job -Name "LocalTunnel" -ScriptBlock {
-            param($nodePath, $subdomain)
-            $env:PATH = "$nodePath;$env:PATH"
-            & "$nodePath\npx.cmd" localtunnel --port 3389 --subdomain $subdomain
-        } -ArgumentList $nodePath, $subdomain
+            param($subdomain)
+            npx localtunnel --port 3389 --subdomain $subdomain
+        } -ArgumentList $subdomain
         
-        Start-Sleep -Seconds 10
+        Start-Sleep -Seconds 15
         
-        # بررسی وضعیت
         $job = Get-Job -Name "LocalTunnel"
         if ($job.State -eq "Running") {
-            Write-Host "✅ LocalTunnel راه‌اندازی شد"
+            Write-Host "LocalTunnel راه اندازی شد"
+            Write-Host "آدرس: https://$subdomain.loca.lt"
         } else {
-            Write-Host "⚠️ مشکل در راه‌اندازی LocalTunnel"
+            Write-Host "مشکل در راه اندازی LocalTunnel"
             Receive-Job $job
         }
 
-    - name: تنظیم SSH Tunnel (روش جایگزین)
-      run: |
-        Write-Host "🔧 تنظیم SSH Tunnel به عنوان backup..."
-        
-        # دانلود OpenSSH client (اگر نیاز باشد)
-        Write-Host "📥 آماده‌سازی SSH client..."
-        
-        # ایجاد فایل batch برای SSH tunnel
-        $batchContent = @"
-@echo off
-echo راه‌اندازی SSH tunnel...
-ssh -R 3389:localhost:3389 serveo.net
-"@
-        $batchContent | Out-File -FilePath "ssh-tunnel.bat" -Encoding ASCII
-        
-        Write-Host "✅ فایل SSH tunnel آماده شد"
-
     - name: اطلاعات اتصال
       run: |
+        Write-Host "=============== اطلاعات اتصال RDP ==============="
+        Write-Host "سرور: Windows GitHub Actions"
+        Write-Host "نام کاربری: ${{ github.event.inputs.username }}"
+        Write-Host "رمز عبور: ${{ github.event.inputs.password }}"
+        Write-Host "آدرس: https://github-rdp-${{ github.run_id }}.loca.lt"
+        Write-Host "پورت: 443 (HTTPS tunnel)"
         Write-Host ""
-        Write-Host "=============== 🔗 اطلاعات اتصال RDP ==============="
-        Write-Host ""
-        Write-Host "🖥️  سرور: Windows GitHub Actions"
-        Write-Host "👤 نام کاربری: ${{ github.event.inputs.username }}"
-        Write-Host "🔑 رمز عبور: ${{ github.event.inputs.password }}"
-        Write-Host ""
-        Write-Host "🌐 روش‌های اتصال:"
-        Write-Host "   1️⃣ LocalTunnel: https://github-rdp-${{ github.run_id }}.loca.lt"
-        Write-Host "   2️⃣ SSH Tunnel: ssh -R 3389:localhost:3389 serveo.net"
-        Write-Host ""
-        Write-Host "📱 برای اتصال RDP:"
-        Write-Host "   • Windows: mstsc /v:github-rdp-${{ github.run_id }}.loca.lt:443"
-        Write-Host "   • Mac: Microsoft Remote Desktop"
-        Write-Host "   • Mobile: RD Client"
-        Write-Host ""
-        Write-Host "⚡ نکات مهم:"
-        Write-Host "   • اگر LocalTunnel کار نکرد، از SSH استفاده کنید"
-        Write-Host "   • جلسه تا 5 ساعت فعال می‌ماند"
-        Write-Host "   • برای قطع کردن، در Actions روی Cancel کلیک کنید"
-        Write-Host ""
+        Write-Host "برای اتصال RDP:"
+        Write-Host "آدرس: github-rdp-${{ github.run_id }}.loca.lt:443"
         Write-Host "=============================================="
 
-    - name: راه‌اندازی SSH Tunnel اضافی
+    - name: نگه داری جلسه
       run: |
-        Write-Host "🔄 راه‌اندازی SSH tunnel به عنوان backup..."
-        
-        # تست SSH
-        try {
-            Write-Host "🧪 تست اتصال SSH..."
-            # این قسمت فقط برای اطلاعات است
-            Write-Host "📋 برای اتصال دستی SSH tunnel:"
-            Write-Host "   ssh -R 3389:localhost:3389 serveo.net"
-            Write-Host "✅ SSH tunnel آماده است"
-        } catch {
-            Write-Host "⚠️ SSH در دسترس نیست، LocalTunnel را استفاده کنید"
-        }
-
-    - name: نگه‌داری جلسه و مانیتورینگ
-      run: |
-        Write-Host "🔄 شروع حلقه نگه‌داری جلسه..."
-        Write-Host "⏰ زمان شروع: $(Get-Date)"
-        
+        Write-Host "سرور فعال نگه داشته می شود..."
         $counter = 0
         while($true) {
-            Start-Sleep 60  # هر دقیقه چک کن
+            Start-Sleep 60
             $counter++
+            Write-Host "فعال: $counter دقیقه"
             
-            $hours = [math]::Floor($counter / 60)
-            $minutes = $counter % 60
-            
-            Write-Host "⏱️  فعال: $hours ساعت و $minutes دقیقه"
-            
-            # بررسی LocalTunnel job
             $ltJob = Get-Job -Name "LocalTunnel" -ErrorAction SilentlyContinue
-            if ($ltJob) {
-                if ($ltJob.State -eq "Running") {
-                    Write-Host "✅ LocalTunnel فعال است"
-                } else {
-                    Write-Host "⚠️ LocalTunnel متوقف شده، راه‌اندازی مجدد..."
-                    Remove-Job $ltJob -Force
-                    
-                    # راه‌اندازی مجدد
-                    $nodePath = "$(Get-Location)\node-v18.17.0-win-x64"
-                    $subdomain = "github-rdp-${{ github.run_id }}"
-                    
-                    Start-Job -Name "LocalTunnel" -ScriptBlock {
-                        param($nodePath, $subdomain)
-                        $env:PATH = "$nodePath;$env:PATH"
-                        & "$nodePath\npx.cmd" localtunnel --port 3389 --subdomain $subdomain
-                    } -ArgumentList $nodePath, $subdomain
-                }
+            if ($ltJob -and $ltJob.State -ne "Running") {
+                Write-Host "راه اندازی مجدد LocalTunnel..."
+                Remove-Job $ltJob -Force
+                
+                $subdomain = "github-rdp-${{ github.run_id }}"
+                Start-Job -Name "LocalTunnel" -ScriptBlock {
+                    param($subdomain)
+                    npx localtunnel --port 3389 --subdomain $subdomain
+                } -ArgumentList $subdomain
             }
             
-            # هر 10 دقیقه اطلاعات اتصال رو نمایش بده
-            if ($counter % 10 -eq 0) {
-                Write-Host ""
-                Write-Host "🔗 آدرس اتصال: https://github-rdp-${{ github.run_id }}.loca.lt"
-                Write-Host "👤 کاربر: ${{ github.event.inputs.username }}"
-                Write-Host "🔑 رمز: ${{ github.event.inputs.password }}"
-                Write-Host ""
-            }
-            
-            # فعالیت سیستم برای جلوگیری از خواب
-            try {
-                [System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") | Out-Null
-                $pos = [System.Windows.Forms.Cursor]::Position
-                [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(($pos.X + 1), $pos.Y)
-                Start-Sleep -Milliseconds 100
-                [System.Windows.Forms.Cursor]::Position = $pos
-            } catch {
-                # اگر نتونست cursor رو حرکت بده، مشکلی نیست
+            if ($counter % 5 -eq 0) {
+                Write-Host "آدرس اتصال: https://github-rdp-${{ github.run_id }}.loca.lt"
+                Write-Host "کاربر: ${{ github.event.inputs.username }}"
             }
         }

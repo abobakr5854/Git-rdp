@@ -1,0 +1,85 @@
+name: Simple RDP with Bore Tunnel
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: 'نام کاربری'
+        required: true
+        default: 'user'
+      password:
+        description: 'رمز عبور'
+        required: true
+        default: 'Pass123!'
+
+jobs:
+  windows-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 300
+
+    steps:
+    - name: تنظیم RDP
+      run: |
+        # فعال کردن RDP
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        
+        # ایجاد کاربر
+        $username = "${{ github.event.inputs.username }}"
+        $password = "${{ github.event.inputs.password }}" | ConvertTo-SecureString -AsPlainText -Force
+        
+        try {
+            New-LocalUser -Name $username -Password $password -Description "RDP User" -PasswordNeverExpires -ErrorAction Stop
+            Write-Host "کاربر جدید ایجاد شد: $username"
+        } catch {
+            Set-LocalUser -Name $username -Password $password
+            Write-Host "رمز کاربر بروز شد: $username"
+        }
+        
+        Add-LocalGroupMember -Group "Remote Desktop Users" -Member $username -ErrorAction SilentlyContinue
+        Add-LocalGroupMember -Group "Administrators" -Member $username -ErrorAction SilentlyContinue
+
+    - name: دانلود Bore
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/latest/download/bore-v0.5.1-x86_64-pc-windows-msvc.zip" -OutFile "bore.zip"
+        Expand-Archive bore.zip -DestinationPath .
+        Write-Host "Bore دانلود شد!"
+
+    - name: شروع Bore Tunnel
+      run: |
+        Write-Host "شروع Bore tunnel..."
+        Start-Process -FilePath ".\bore.exe" -ArgumentList "local", "3389", "--to", "bore.pub" -WindowStyle Hidden -PassThru
+        Start-Sleep -Seconds 5
+        
+        Write-Host "🔗 Bore tunnel راه‌اندازی شد!"
+
+    - name: اطلاعات اتصال
+      run: |
+        Write-Host "=============== اطلاعات اتصال RDP ==============="
+        Write-Host "🖥️  سرور: Windows GitHub Actions"
+        Write-Host "👤 نام کاربری: ${{ github.event.inputs.username }}"
+        Write-Host "🔑 رمز عبور: ${{ github.event.inputs.password }}"
+        Write-Host "🌍 آدرس: bore.pub"
+        Write-Host "🔌 پورت: متغیر (در لاگ‌ها مشخص می‌شود)"
+        Write-Host ""
+        Write-Host "⚡ اتصال سریع: در Remote Desktop Connection وارد کنید:"
+        Write-Host "   آدرس: bore.pub:PORT"
+        Write-Host "   (PORT را از خروجی بالا کپی کنید)"
+        Write-Host "=============================================="
+
+    - name: نگه‌داری جلسه
+      run: |
+        Write-Host "🔄 سرور فعال نگه داشته می‌شود..."
+        $i = 0
+        while($true) {
+            Start-Sleep 30
+            $i++
+            Write-Host "✅ فعال - $i دقیقه گذشت"
+            
+            # بررسی Bore
+            $boreProcess = Get-Process bore -ErrorAction SilentlyContinue
+            if(-not $boreProcess) {
+                Write-Host "⚠️ Bore متوقف شده، راه‌اندازی مجدد..."
+                Start-Process -FilePath ".\bore.exe" -ArgumentList "local", "3389", "--to", "bore.pub" -WindowStyle Hidden
+            }
+        }
